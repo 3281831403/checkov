@@ -455,14 +455,17 @@ class ExtArgumentParser(configargparse.ArgumentParser):
         self.add(
             "--create-baseline",
             help="Alongside outputting the findings, save all results to .checkov.baseline file"
-                 " so future runs will not re-flag the same noise. Works only with `--directory` flag",
+                 " so future runs will not re-flag the same noise. The baseline is written into the"
+                 " scanned directory (or next to the scanned file when using --file) and only"
+                 " suppresses failures of the same file within that scan root",
             action="store_true",
             default=False,
         )
         self.add(
             "--baseline",
             help="Use a .checkov.baseline file to compare current results with a known baseline. "
-                 "Report will include only failed checks that are new with respect to the provided baseline",
+                 "Report will include only failed checks that are new with respect to the provided baseline. "
+                 "A baseline only applies to its originating scan root and matches on file, resource and check",
             default=None,
         )
         self.add(

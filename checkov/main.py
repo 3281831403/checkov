@@ -546,7 +546,7 @@ class Checkov:
                     if runner_registry.is_error_in_reports(self.scan_reports):
                         self.exit_run()
                     if baseline:
-                        baseline.compare_and_reduce_reports(self.scan_reports)
+                        baseline.compare_and_reduce_reports(self.scan_reports, root_folder=root_folder)
 
                     if bc_integration.is_integration_configured() \
                             and bc_integration.bc_source \
@@ -651,6 +651,9 @@ class Checkov:
             elif self.config.file:
                 bc_integration.scan_file = self.config.file
                 runner_registry.filter_runners_for_files(self.config.file)
+                # The runners derive the scan root the same way (see e.g.
+                # checkov/terraform/runner.py), and record file paths are relative to it.
+                file_root_folder = os.path.split(os.path.commonprefix(self.config.file))[0]
                 try:
                     self.scan_reports = runner_registry.run(
                         external_checks_dir=external_checks_dir,
@@ -664,13 +667,15 @@ class Checkov:
                 if runner_registry.is_error_in_reports(self.scan_reports):
                     self.exit_run()
                 if baseline:
-                    baseline.compare_and_reduce_reports(self.scan_reports)
+                    baseline.compare_and_reduce_reports(self.scan_reports, root_folder=file_root_folder)
                 if self.config.create_baseline:
                     overall_baseline = Baseline()
                     for report in self.scan_reports:
                         overall_baseline.add_findings_from_report(report)
-                    created_baseline_path = os.path.join(os.path.abspath(os.path.commonprefix(self.config.file)),
-                                                         '.checkov.baseline')
+                    # Write the baseline into the directory the scanned file lives
+                    # in, so it is pinned to that scan root on later --baseline runs.
+                    baseline_output_dir = os.path.abspath(file_root_folder) if file_root_folder else os.getcwd()
+                    created_baseline_path = os.path.join(baseline_output_dir, '.checkov.baseline')
                     with open(created_baseline_path, 'w') as f:
                         json.dump(overall_baseline.to_dict(), f, indent=4)
 

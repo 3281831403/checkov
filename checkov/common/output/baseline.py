@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections import defaultdict
 from operator import itemgetter
 
 from checkov.common.models.enums import CheckResult
+from checkov.common.util.file_utils import convert_to_unix_path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,12 +16,33 @@ if TYPE_CHECKING:
     from checkov.common.typing import _BaselineFinding, _BaselineFailedChecks
 
 
+def _normalize_path(path: str) -> str:
+    """Normalize a path to a forward-slash representation for comparison.
+
+    Check records carry a scan-root-relative path built with ``os.sep``, so on
+    Windows it contains backslashes (e.g. ``\\main.tf``) while a baseline created
+    on Linux stores forward slashes (e.g. ``/main.tf``). Normalizing both sides
+    makes baselines portable across operating systems.
+
+    Drive letters and paths are compared case-insensitively on case-insensitive
+    filesystems (Windows, macOS).
+    """
+    normalized = str(convert_to_unix_path(path))
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        normalized = normalized.lower()
+    return normalized
+
+
 class Baseline:
     def __init__(self, output_skipped: bool = False) -> None:
         self.path = ""
         self.path_failed_checks_map: dict[str, list[_BaselineFinding]] = defaultdict(list)
         self.failed_checks: list[_BaselineFailedChecks] = []
         self.output_skipped = output_skipped
+        # Absolute path of the scan root the baseline belongs to. Baselines are
+        # written next to the scanned root/folder, so the baseline file's own
+        # directory is its scan root.
+        self.scan_root = ""
 
     def add_findings_from_report(self, report: Report) -> None:
         for check in report.failed_checks:
@@ -64,7 +88,11 @@ class Baseline:
         resp = {"failed_checks": sorted(failed_checks_list, key=itemgetter("file"))}
         return resp
 
-    def compare_and_reduce_reports(self, scan_reports: list[Report]) -> None:
+    def compare_and_reduce_reports(self, scan_reports: list[Report], root_folder: str | None = None) -> None:
+        if root_folder is not None and self.scan_root and not self._is_root_in_baseline(root_folder):
+            # This baseline was generated from a different scan root, so none of
+            # its findings can belong to the current reports - leave them untouched.
+            return
         for scan_report in scan_reports:
             scan_report.passed_checks = [
                 check for check in scan_report.passed_checks if self._is_check_in_baseline(check)
@@ -82,10 +110,21 @@ class Baseline:
                 check for check in scan_report.failed_checks if not self._is_check_in_baseline(check)
             ]
 
+    def _is_root_in_baseline(self, root_folder: str) -> bool:
+        if not self.scan_root:
+            return True
+        return _normalize_path(os.path.abspath(root_folder)) == _normalize_path(self.scan_root)
+
     def _is_check_in_baseline(self, check: Record) -> bool:
         failed_check_id = check.check_id
         failed_check_resource = check.resource
+        normalized_check_file_path = _normalize_path(check.file_path)
         for baseline_failed_check in self.failed_checks:
+            # Match on the file as well, so identically named resources in
+            # different files do not suppress each other. Paths are normalized to
+            # forward slashes, so baselines are portable between Linux and Windows.
+            if _normalize_path(baseline_failed_check["file"]) != normalized_check_file_path:
+                continue
             for finding in baseline_failed_check["findings"]:
                 if finding["resource"] == failed_check_resource and failed_check_id in finding["check_ids"]:
                     return True
@@ -96,3 +135,6 @@ class Baseline:
         with open(file_path, "r") as f:
             baseline_raw = json.load(f)
             self.failed_checks = baseline_raw.get("failed_checks", {})
+        # Baselines are created inside the scan root (or, in --file mode, inside
+        # the scanned file's directory), which pins the baseline to that root.
+        self.scan_root = os.path.abspath(os.path.dirname(file_path))
